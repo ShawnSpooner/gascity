@@ -39,6 +39,12 @@ func excludedPath(rel string) bool {
 	if rel == citylayout.RuntimeRoot {
 		return false
 	}
+	// .gc/settings.json holds the Claude Code hook definitions that agents
+	// load via --settings at /workspace/.gc/settings.json. Prebaked agents
+	// must find it on disk at startup.
+	if rel == citylayout.RuntimeRoot+"/settings.json" {
+		return false
+	}
 	if strings.HasPrefix(rel, citylayout.RuntimeRoot+"/") {
 		return true
 	}

@@ -124,14 +124,34 @@ name = "test-city"
 		t.Fatalf("AssembleContext: %v", err)
 	}
 
-	// All .gc/ subdirs are now excluded.
+	// .gc/ subdirs are excluded — runtime state, packs, projections all
+	// regenerate on first agent boot or load from the controller.
 	assertFileNotExists(t, outputDir, filepath.Join("workspace", citylayout.SystemPacksRoot, "bd", "pack.toml"))
 	assertFileNotExists(t, outputDir, filepath.Join("workspace", citylayout.CachePacksRoot, "remote", ".git", "HEAD"))
 	assertFileNotExists(t, outputDir, filepath.Join("workspace", citylayout.RuntimeRoot, "runtime", "artifact.txt"))
 	assertFileNotExists(t, outputDir, filepath.Join("workspace", ".gc", "prompts", "mayor.md"))
 	assertFileNotExists(t, outputDir, filepath.Join("workspace", ".gc", "formulas", "legacy.formula.toml"))
 	assertFileNotExists(t, outputDir, filepath.Join("workspace", ".gc", "scripts", "setup.sh"))
-	assertFileNotExists(t, outputDir, filepath.Join("workspace", ".gc", "settings.json"))
+}
+
+func TestAssembleContextIncludesGCSettings(t *testing.T) {
+	cityDir := t.TempDir()
+	outputDir := t.TempDir()
+
+	writeFile(t, cityDir, "city.toml", `[workspace]
+name = "test-city"
+`)
+	// .gc/settings.json carries Claude Code hook definitions (SessionStart,
+	// PreCompact, etc.) that the agent's --settings flag references at
+	// /workspace/.gc/settings.json. Without it baked in, prebaked agents
+	// fail at startup because the hook file is missing.
+	writeFile(t, cityDir, filepath.Join(".gc", "settings.json"), `{"hooks":{}}`)
+
+	if err := AssembleContext(Options{CityPath: cityDir, OutputDir: outputDir}); err != nil {
+		t.Fatalf("AssembleContext: %v", err)
+	}
+
+	assertFileExists(t, outputDir, filepath.Join("workspace", ".gc", "settings.json"))
 }
 
 func TestAssembleContextWithRigPaths(t *testing.T) {
@@ -278,7 +298,7 @@ func TestExcludedPath(t *testing.T) {
 		{".gc/prompts/mayor.md", true},
 		{".gc/formulas/test.toml", true},
 		{".gc/scripts/setup.sh", true},
-		{".gc/settings.json", true},
+		{".gc/settings.json", false},
 		{".env", true},
 		{"credentials.json", true},
 		{"path/to/secret.key", true},
