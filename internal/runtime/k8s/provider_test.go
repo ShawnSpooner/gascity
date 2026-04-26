@@ -84,6 +84,84 @@ func TestProjectedPodStoreRootPrefersGCStoreRoot(t *testing.T) {
 	}
 }
 
+func TestBuildPodEnvDropsHostLeakedEnv(t *testing.T) {
+	cfgEnv := map[string]string{
+		"GC_CITY":             "/Users/me/source/so-city",
+		"HOME":                "/Users/me",
+		"USER":                "me",
+		"LOGNAME":             "me",
+		"PATH":                "/Users/me/.local/bin:/opt/homebrew/bin",
+		"XDG_CONFIG_HOME":     "/Users/me/.config",
+		"XDG_STATE_HOME":      "/Users/me/.local/state",
+		"XDG_DATA_HOME":       "/Users/me/.local/share",
+		"XDG_CACHE_HOME":      "/Users/me/.cache",
+		"GC_BIN":              "/Users/me/.local/bin/gc",
+		"GC_BEADS_SCOPE_ROOT": "/Users/me/source/so-city",
+		"GC_AGENT":            "mayor", // benign, must pass through
+	}
+
+	env, err := buildPodEnv(cfgEnv, "/workspace", "dolt.gc.svc.cluster.local", "3307")
+	if err != nil {
+		t.Fatalf("buildPodEnv: %v", err)
+	}
+
+	got := make(map[string]string, len(env))
+	for _, e := range env {
+		got[e.Name] = e.Value
+	}
+
+	// Host-leaky vars must be stripped so the container's Dockerfile defaults
+	// (HOME=/home/gcagent, image PATH, etc.) take over.
+	mustBeAbsent := []string{
+		"HOME", "USER", "LOGNAME", "PATH",
+		"XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
+		"GC_BIN",
+	}
+	for _, k := range mustBeAbsent {
+		if v, ok := got[k]; ok {
+			t.Errorf("env contains %s=%q, expected to be stripped (host-only var)", k, v)
+		}
+	}
+
+	// City-path-shaped vars must be remapped so they point at the pod's
+	// /workspace, not the controller's host path.
+	if v := got["GC_BEADS_SCOPE_ROOT"]; v != "/workspace" {
+		t.Errorf("GC_BEADS_SCOPE_ROOT = %q, want /workspace", v)
+	}
+
+	// Benign vars still pass through.
+	if got["GC_AGENT"] != "mayor" {
+		t.Errorf("GC_AGENT = %q, want mayor", got["GC_AGENT"])
+	}
+}
+
+func TestBuildPodAgentContainerUsesIfNotPresentPullPolicy(t *testing.T) {
+	p := newProviderWithOps(newFakeK8sOps())
+	cfg := runtime.Config{
+		WorkDir: "/host/city/workspaces/mayor",
+		Env:     map[string]string{"GC_CITY": "/host/city", "GC_AGENT": "mayor"},
+	}
+
+	pod, err := buildPod("test-mayor", cfg, p)
+	if err != nil {
+		t.Fatalf("buildPod: %v", err)
+	}
+
+	if len(pod.Spec.Containers) == 0 {
+		t.Fatal("pod has no containers")
+	}
+	got := pod.Spec.Containers[0].ImagePullPolicy
+	// Local k8s runtimes (OrbStack, Docker Desktop) do not share locally-built
+	// images with the kubelet when the policy is PullAlways — kubelet always
+	// consults the registry first and fails for images that exist only in the
+	// local docker daemon. IfNotPresent matches the init container at line ~300
+	// and the mcp-mail manifest, and lets local-dev workflows pick up
+	// freshly-built images by recreating the pod.
+	if got != corev1.PullIfNotPresent {
+		t.Errorf("agent container ImagePullPolicy = %q, want %q", got, corev1.PullIfNotPresent)
+	}
+}
+
 func TestIsRunning(t *testing.T) {
 	fake := newFakeK8sOps()
 	p := newProviderWithOps(fake)

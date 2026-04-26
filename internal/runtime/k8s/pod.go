@@ -267,9 +267,11 @@ func buildPod(name string, cfg runtime.Config, p *Provider) (*corev1.Pod, error)
 			ServiceAccountName: p.serviceAccount,
 			RestartPolicy:      corev1.RestartPolicyNever,
 			Containers: []corev1.Container{{
-				Name:            "agent",
-				Image:           p.image,
-				ImagePullPolicy: corev1.PullAlways,
+				Name:  "agent",
+				Image: p.image,
+				// IfNotPresent so local k8s runtimes (OrbStack, Docker Desktop)
+				// can use locally-built images.
+				ImagePullPolicy: corev1.PullIfNotPresent,
 				WorkingDir:      podWorkDir,
 				Command:         []string{"/bin/sh", "-c"},
 				Args:            []string{tmuxCmd},
@@ -336,6 +338,18 @@ func buildPodEnv(cfgEnv map[string]string, podWorkDir, managedServiceHost, manag
 		"GC_DOLT_PORT":           true,
 		"BEADS_DOLT_SERVER_HOST": true,
 		"BEADS_DOLT_SERVER_PORT": true,
+		// Host-only env that would shadow the container's Dockerfile defaults
+		// (HOME=/home/gcagent, image PATH, etc.) and break entrypoint scripts
+		// like the credential copy at $HOME/.claude.
+		"HOME":            true,
+		"USER":            true,
+		"LOGNAME":         true,
+		"PATH":            true,
+		"XDG_CONFIG_HOME": true,
+		"XDG_STATE_HOME":  true,
+		"XDG_DATA_HOME":   true,
+		"XDG_CACHE_HOME":  true,
+		"GC_BIN":          true,
 	}
 
 	ctrlCity := controllerCityPath(cfgEnv)
@@ -352,7 +366,7 @@ func buildPodEnv(cfgEnv map[string]string, podWorkDir, managedServiceHost, manag
 			val = "/workspace"
 		case "GC_DIR":
 			val = podWorkDir
-		case "GC_STORE_ROOT", "GC_RIG_ROOT", "BEADS_DIR", "GT_ROOT", "GC_CITY_RUNTIME_DIR", "GC_PACK_STATE_DIR", "GC_PACK_DIR":
+		case "GC_STORE_ROOT", "GC_RIG_ROOT", "BEADS_DIR", "GT_ROOT", "GC_CITY_RUNTIME_DIR", "GC_PACK_STATE_DIR", "GC_PACK_DIR", "GC_BEADS_SCOPE_ROOT":
 			val = remapControllerPathToPod(val, ctrlCity)
 		}
 		env = append(env, corev1.EnvVar{Name: k, Value: val})
