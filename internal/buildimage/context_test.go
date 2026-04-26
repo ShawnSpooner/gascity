@@ -191,6 +191,64 @@ prompt_template = "prompts/mayor.md"
 	assertFileExists(t, outputDir, "workspace/prompts/mayor.md")
 }
 
+func TestAssembleContextFollowsSymlinkedDirectories(t *testing.T) {
+	cityDir := t.TempDir()
+	outputDir := t.TempDir()
+
+	writeFile(t, cityDir, "city.toml", `[workspace]
+name = "test-city"
+`)
+
+	// Real skill directory living elsewhere in the city.
+	writeFile(t, cityDir, "shared/skills/gc-agents/SKILL.md", "skill body")
+
+	// Symlink under .claude/skills/ pointing to that directory — mirrors how
+	// `gc init` lays out skill imports.
+	mkdirAll(t, cityDir, ".claude/skills")
+	target := filepath.Join(cityDir, "shared/skills/gc-agents")
+	link := filepath.Join(cityDir, ".claude/skills/core.gc-agents")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("creating symlink: %v", err)
+	}
+
+	if err := AssembleContext(Options{
+		CityPath:  cityDir,
+		OutputDir: outputDir,
+	}); err != nil {
+		t.Fatalf("AssembleContext: %v", err)
+	}
+
+	// The symlinked skill must be materialized as a regular directory in the
+	// build context — Docker's build context does not preserve symlinks.
+	assertFileExists(t, outputDir, "workspace/.claude/skills/core.gc-agents/SKILL.md")
+}
+
+func TestAssembleContextFollowsSymlinkedFiles(t *testing.T) {
+	cityDir := t.TempDir()
+	outputDir := t.TempDir()
+
+	writeFile(t, cityDir, "city.toml", `[workspace]
+name = "test-city"
+`)
+	writeFile(t, cityDir, "shared/prompt.md", "shared prompt")
+
+	mkdirAll(t, cityDir, "prompts")
+	target := filepath.Join(cityDir, "shared/prompt.md")
+	link := filepath.Join(cityDir, "prompts/mayor.md")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("creating symlink: %v", err)
+	}
+
+	if err := AssembleContext(Options{
+		CityPath:  cityDir,
+		OutputDir: outputDir,
+	}); err != nil {
+		t.Fatalf("AssembleContext: %v", err)
+	}
+
+	assertFileExists(t, outputDir, "workspace/prompts/mayor.md")
+}
+
 func TestAssembleContextRequiresCityPath(t *testing.T) {
 	err := AssembleContext(Options{OutputDir: t.TempDir()})
 	if err == nil {

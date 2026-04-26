@@ -80,14 +80,14 @@ func AssembleContext(opts Options) error {
 	}
 
 	// Copy city directory contents into workspace, excluding runtime state.
-	if err := copyDirFiltered(opts.CityPath, wsDir); err != nil {
+	if err := copyTreeFiltered(opts.CityPath, wsDir, ""); err != nil {
 		return fmt.Errorf("copying city to workspace: %w", err)
 	}
 
 	// Copy rig paths into workspace.
 	for rigName, rigPath := range opts.RigPaths {
 		rigDst := filepath.Join(wsDir, rigName)
-		if err := copyDirFiltered(rigPath, rigDst); err != nil {
+		if err := copyTreeFiltered(rigPath, rigDst, rigName); err != nil {
 			return fmt.Errorf("copying rig %q: %w", rigName, err)
 		}
 	}
@@ -117,8 +117,14 @@ func AssembleContext(opts Options) error {
 	return nil
 }
 
-// copyDirFiltered copies src directory to dst, skipping excluded paths.
-func copyDirFiltered(src, dst string) error {
+// copyTreeFiltered walks src and copies each entry into dst, applying
+// excludedPath against the entry's path under the build-context root.
+// dstPrefix is dst's path relative to that root (empty for the workspace
+// itself, e.g. "my-rig" for a rig). It carries through recursion so that
+// when we follow a symlinked directory pointing elsewhere on disk, the
+// exclusion check still runs against the path the content will have in
+// the image — not the symlink target's own subtree.
+func copyTreeFiltered(src, dst, dstPrefix string) error {
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -132,11 +138,11 @@ func copyDirFiltered(src, dst string) error {
 			return nil
 		}
 
-		fullRel, err := filepath.Rel(filepath.Dir(src), path)
-		if err != nil {
-			return err
+		contextRel := rel
+		if dstPrefix != "" {
+			contextRel = filepath.Join(dstPrefix, rel)
 		}
-		if excludedPath(rel) || excludedPath(fullRel) {
+		if excludedPath(rel) || excludedPath(contextRel) {
 			if info.IsDir() {
 				return filepath.SkipDir
 			}
@@ -147,6 +153,28 @@ func copyDirFiltered(src, dst string) error {
 
 		if info.IsDir() {
 			return os.MkdirAll(target, info.Mode())
+		}
+
+		// filepath.Walk surfaces symlinks via lstat, so symlinks to directories
+		// arrive here with IsDir() == false. Resolve the link and recurse so
+		// the linked content lands in the build context as a real directory —
+		// Docker build contexts do not preserve symlinks.
+		if info.Mode()&os.ModeSymlink != 0 {
+			realPath, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				return fmt.Errorf("resolving symlink %s: %w", path, err)
+			}
+			realInfo, err := os.Stat(realPath)
+			if err != nil {
+				return fmt.Errorf("resolving symlink %s: %w", path, err)
+			}
+			if realInfo.IsDir() {
+				if err := os.MkdirAll(target, realInfo.Mode()); err != nil {
+					return err
+				}
+				return copyTreeFiltered(realPath, target, contextRel)
+			}
+			return copyFile(realPath, target, realInfo.Mode())
 		}
 
 		return copyFile(path, target, info.Mode())
